@@ -1,14 +1,17 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<updates>
-  <update>
-    <package>
-      <name>AdaptiveDrizzleBlend</name>
-      <version>1.0.0</version>
-      <platform>all</platform>
-      <type>script</type>
-      <file>
-        scripts/AdaptiveDrizzleBlend/Adaptive_Drizzle_Blend.js
-      </file>
-    </package>
-  </update>
-</updates>
+<xri version="1.0">
+  <repository>
+    <name>Adaptive Drizzle Blend Repository</name>
+    <description>Adaptive Drizzle Blend for PixInsight</description>
+  </repository>
+
+  <package>
+    <name>AdaptiveDrizzleBlend</name>
+    <version>1.0.0</version>
+    <platform>all</platform>
+    <type>script</type>
+    <files>
+      <file>scripts/AdaptiveDrizzleBlend/Adaptive_Drizzle_Blend.js</file>
+    </files>
+  </package>
+</xri>
