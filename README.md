@@ -1,60 +1,82 @@
-# Adaptive Drizzle Blend for PixInsight  
+# Adaptive Drizzle Blend for PixInsight
+
 **by Daniel Espitia**
 
-Adaptive Drizzle Blend is an advanced PixInsight script designed to intelligently combine multiple resolution versions of the same image based on local Signal-to-Noise Ratio (SNR).
+Adaptive Drizzle Blend is an advanced PixInsight script designed to
+intelligently combine multiple resolution versions of the same image
+based on local Signal-to-Noise Ratio (SNR).
 
-Instead of applying Drizzle globally, this tool analyzes the image in local regions and dynamically blends:
+Instead of applying Drizzle globally, this tool analyzes the image in
+local regions and dynamically blends:
 
-- High-SNR areas → Drizzle (maximum resolution)  
-- Medium-SNR areas → Normal integration  
-- Low-SNR areas → Superpixel smoothing (higher effective SNR)  
+-   High-SNR areas → Drizzle (maximum resolution)
+-   Medium-SNR areas → Normal integration
+-   Low-SNR areas → Superpixel smoothing (higher effective SNR)
 
-This produces improved detail where data supports it, while reducing noise where the signal is weak — all with smooth, physically consistent transitions.
+This produces improved detail where data supports it, while reducing
+noise where the signal is weak --- all with smooth, physically
+consistent transitions.
 
----
+This version works only with monochrome starless images.
 
-## How It Works
-
-1. Computes local SNR per tile using a background preview (MAD-based noise estimation)
-2. Determines percentile-based thresholds for:
-   - Low-SNR smoothing
-   - High-SNR drizzle dominance
-3. Automatically generates a 2x2 superpixel version from the normal integration
-4. Applies robust global intensity matching
-5. Performs adaptive 3-way blending using PixelMath
-
----
-
-## Features
-
-- Adaptive SNR-based resolution blending  
-- Automatic superpixel generation (2x2)  
-- Robust global intensity normalization  
-- Smooth transition masks  
-- Console progress reporting  
-- Automatic cleanup of intermediate images  
-- Designed for linear monochrome astrophotography workflows  
-
----
+------------------------------------------------------------------------
 
 ## Requirements
 
-- PixInsight (recent versions)
-- Linear monochrome images
-- Drizzle and Normal integrations must be aligned
-- A background preview for noise estimation
-
----
+-   PixInsight (recent versions)
+-   Linear monochrome images only (For color images, you must separate the R, G, and B channels)
+-   Drizzle and Normal integrations must be aligned
+-   A background preview in the normal integration image (for noise estimation)
+    
+------------------------------------------------------------------------
 
 ## User Controls
 
-- **Analysis Area Size (px)** – Size of local region used for SNR analysis  
-- **Low-SNR Areas to Smooth (%)** – Percentage of lowest-SNR regions assigned to superpixel smoothing  
-- **High-SNR Areas for Drizzle (%)** – Percentage of highest-SNR regions assigned to drizzle dominance  
-- **Transition Smoothness** – Feather strength for blending masks  
+-   **Analysis Area Size (px)** -- Size of local region used for SNR
+    analysis
+-   **Low-SNR Areas to Smooth (%)** -- Percentage of lowest-SNR regions
+    assigned to superpixel smoothing
+-   **High-SNR Areas for Drizzle (%)** -- Percentage of highest-SNR
+    regions assigned to drizzle dominance
+-   **Transition Smoothness** -- Feather strength for blending masks
 
----
+------------------------------------------------------------------------
+
+## Download
+
+👉 **Direct Download:**\
+<https://raw.githubusercontent.com/danielespitiacolombia/Adaptive-Drizzle-Blend/main/scripts/AdaptiveDrizzleBlend/Adaptive_Drizzle_Blend.js>
+
+------------------------------------------------------------------------
 
 ## Installation
 
-1. Download the file:
+1.  Download the file `Adaptive_Drizzle_Blend.js`
+2.  In PixInsight go to: Script → Feature Scripts → Add
+3.  Select the downloaded file
+4.  The script will appear under: Script → Utilities
+
+------------------------------------------------------------------------
+
+## Recommended Workflow
+
+1.  Perform Normal Integration (1x)
+2.  Perform Drizzle Integration (2x)
+3.  Remove stars from both images
+4.  Create a small background preview (in the Normal Integration image)
+4.  Run Adaptive Drizzle Blend
+5.  Continue processing as usual
+
+------------------------------------------------------------------------
+
+## License
+
+MIT License
+You may modify and distribute with attribution.
+
+------------------------------------------------------------------------
+
+## Author
+
+Daniel Espitia
+https://www.youtube.com/@AstroVecinos
