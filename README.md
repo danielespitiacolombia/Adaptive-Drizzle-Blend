@@ -51,9 +51,9 @@ This version works in pixinsight 1.9.3
 
 ## Installation
 
-1.  Download the file `Adaptive_Drizzle_Blend.js`
+1.  Download and extract the zip file Adaptive-Drizzle-Blend-main.zip
 2.  In PixInsight go to: Script → Feature Scripts → Add
-3.  Select the downloaded file
+3.  Select the downloaded file folder
 4.  The script will appear under: Script → Utilities
 
 ------------------------------------------------------------------------
