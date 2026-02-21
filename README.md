@@ -68,9 +68,9 @@ consistent transitions.
 5.  Continue processing as usual
 
 ------------------------------------------------------------------------
-## 📘 Usage Examples
+## Usage Examples
 
-### 1️⃣ Using an External Superpixel Image  
+### Using an External Superpixel Image  
 *(Recommended for advanced workflows)*
 
 **When to use:**  
@@ -99,7 +99,7 @@ You have already generated a high-quality 2×2 superpixel image manually (e.g., 
 
 ---
 
-### 2️⃣ Using Script-Generated Superpixel  
+### Using Script-Generated Superpixel  
 *(Default workflow)*
 
 **When to use:**  
@@ -128,7 +128,7 @@ You do not have a pre-generated superpixel image.
 
 ---
 
-### 3️⃣ Without Superpixel (Two-Way Blend Only)
+### Without Superpixel (Two-Way Blend Only)
 
 **When to use:**  
 You want a clean adaptive blend only between Normal and Drizzle, without additional smoothing.
