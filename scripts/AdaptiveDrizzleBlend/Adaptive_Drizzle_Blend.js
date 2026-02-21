@@ -1,5 +1,3 @@
-#feature-id    Utilities > Adaptive Drizzle Blend
-#feature-info  Adaptive Drizzle Blend Beta 1<br/>by Daniel Espitia
 /*
 Adaptive Drizzle Blend Beta 1
 by Daniel Espitia
@@ -471,6 +469,67 @@ function buildMasks(finalW, finalH, scale, tile1x, coords, snrList, TS, TD, soft
    return { idD:idD, idN:idN, idS:idS, vD:vD, vN:vN, vS:vS };
 }
 
+function buildMasksDN(finalW, finalH, scale, tile1x, coords, snrList, TD, softness, suffix)
+{
+   var tileF = tile1x * scale;
+
+   var idD = "maskD" + suffix;
+   var idN = "maskN" + suffix;
+
+   var vD = createMono(idD, finalW, finalH);
+   var vN = createMono(idN, finalW, finalH);
+
+   var iD = vD.image, iN = vN.image;
+
+   beginProcessCompat(vD); beginProcessCompat(vN);
+   try
+   {
+      for (var y=0; y<finalH; y++)
+      {
+         if ((y & 127) === 0) progressLine(100*(y+1)/finalH, "Init masks");
+         for (var x=0; x<finalW; x++)
+         {
+            iD.setSample(0, x, y);
+            iN.setSample(1, x, y);
+         }
+      }
+      progressDone();
+
+      var n = snrList.length;
+      for (var t=0; t<n; t++)
+      {
+         if ((t & 31) === 0 || t === n-1)
+            progressLine(100*(t+1)/n, "Fill masks");
+
+         var snr = snrList[t];
+
+         var wD = logistic01(snr, TD, softness);
+         var wN = 1.0 - wD;
+
+         wD = clamp01(wD); wN = clamp01(wN);
+         var sum = wD + wN;
+         if (sum < 1e-6) { wN = 1.0; sum = 1.0; }
+         wD /= sum; wN /= sum;
+
+         var X0 = coords[t].x0 * scale;
+         var Y0 = coords[t].y0 * scale;
+         var maxX = Math.min(finalW, X0 + tileF);
+         var maxY = Math.min(finalH, Y0 + tileF);
+
+         for (var yy=Y0; yy<maxY; yy++)
+            for (var xx=X0; xx<maxX; xx++)
+            {
+               iD.setSample(wD, xx, yy);
+               iN.setSample(wN, xx, yy);
+            }
+      }
+      progressDone();
+   }
+   finally { endProcessCompat(vD); endProcessCompat(vN); }
+
+   return { idD:idD, idN:idN, vD:vD, vN:vN };
+}
+
 function blend3(drizzleView, normalUpView, superUpView, maskIds, outId)
 {
    safeCloseById(outId);
@@ -478,6 +537,24 @@ function blend3(drizzleView, normalUpView, superUpView, maskIds, outId)
    var PM = new PixelMath;
    PM.expression =
       maskIds.idS + "*" + superUpView.id + " + " +
+      maskIds.idN + "*" + normalUpView.id + " + " +
+      maskIds.idD + "*" + drizzleView.id;
+
+   PM.useSingleExpression = true;
+   PM.generateOutput = true;
+   PM.createNewImage = true;
+   PM.newImageId = outId;
+   PM.newImageSampleFormat = PixelMath.prototype.f32;
+   PM.rescale = false;
+   PM.executeOn(drizzleView);
+}
+
+function blend2(drizzleView, normalUpView, maskIds, outId)
+{
+   safeCloseById(outId);
+
+   var PM = new PixelMath;
+   PM.expression =
       maskIds.idN + "*" + normalUpView.id + " + " +
       maskIds.idD + "*" + drizzleView.id;
 
@@ -545,7 +622,7 @@ function combineRGBManual(rView, gView, bView, outId)
 }
 
 // ---------------- Core pipeline (mono) ----------------
-function runMono(drizzleMono, normal1xMono, bgMono, params, suffix)
+function runMono(drizzleMono, normal1xMono, bgMono, superExternalMono, params, suffix)
 {
    var statsStep = 8;
    var softness  = 3.0;
@@ -573,32 +650,81 @@ function runMono(drizzleMono, normal1xMono, bgMono, params, suffix)
    var normalUp = (W1 === finalW && H1 === finalH) ? normal1xMono
                  : upsampleNearestMono(normal1xMono, finalW, finalH, "nodrizzle_up"+suffix, "Upsample normal");
 
-   var spSmall = superpixel2x2Mono(normal1xMono, "super_small"+suffix, "Superpixel 2x2");
-   var spUp = upsampleNearestMono(spSmall, finalW, finalH, "super_up"+suffix, "Upsample super");
+   var useSuper = (lowP > 0);
 
-   var sigma_bg = sigmaFromPreviewMAD(bgMono, statsStep);
+   // If Low-SNR Areas to Smooth (%) == 0, skip superpixel entirely (even if user selected an external one)
+   // to avoid generating unnecessary images and to reduce memory usage.
+   var spUp = null;
+
+   if (useSuper)
+   {
+      // Superpixel: use external image if provided, otherwise generate 2x2 from Normal (1x) before upsampling.
+      var spSmall = null;
+      if (superExternalMono && !superExternalMono.isNull)
+      {
+         var ew = superExternalMono.image.width, eh = superExternalMono.image.height;
+         var nW = W1, nH = H1;
+
+         if (ew === Math.floor(nW/2) && eh === Math.floor(nH/2))
+            spSmall = superExternalMono;
+         else if (ew === nW && eh === nH)
+            spSmall = superExternalMono;
+         else if (ew === finalW && eh === finalH)
+            spSmall = superExternalMono;
+         else
+            throw new Error("External superpixel has invalid dimensions. Expected " +
+                            Math.floor(nW/2) + "x" + Math.floor(nH/2) + " (recommended), or " +
+                            nW + "x" + nH + ", or " + finalW + "x" + finalH + ".");
+      }
+      else
+      {
+         spSmall = superpixel2x2Mono(normal1xMono, "super_small"+suffix, "Superpixel 2x2");
+      }
+
+      // Upsample superpixel to final resolution if needed
+      if (spSmall.image.width === finalW && spSmall.image.height === finalH)
+         spUp = spSmall;
+      else
+         spUp = upsampleNearestMono(spSmall, finalW, finalH, "super_up"+suffix, "Upsample super");
+   }
+var sigma_bg = sigmaFromPreviewMAD(bgMono, statsStep);
    console.writeln("sigma_bg"+suffix+" = " + sigma_bg);
 
+   
    var drizzleFit = fitToReference(drizzleMono, normalUp, statsStep, "drz_fit"+suffix);
-   var superFit   = fitToReference(spUp,       normalUp, statsStep, "sup_fit"+suffix);
 
    var tiles = computeTilesSNR(normal1xMono, tile, stride, sigma_bg, "SNR tiles");
 
-   var TS = percentile(tiles.snrList.slice(), lowP);
    var TD = percentile(tiles.snrList.slice(), 100 - highP);
-
-   console.writeln("TS"+suffix+" = " + TS);
    console.writeln("TD"+suffix+" = " + TD);
 
-   var masks = buildMasks(finalW, finalH, scale, tile, tiles.coords, tiles.snrList, TS, TD, softness, suffix);
-
-   tryFeather(masks.vD, featherSigma);
-   tryFeather(masks.vN, featherSigma);
-   tryFeather(masks.vS, featherSigma);
-
    var outId = "adaptive_blend" + suffix;
-   blend3(drizzleFit, normalUp, superFit, masks, outId);
 
+   if (useSuper)
+   {
+      var TS = percentile(tiles.snrList.slice(), lowP);
+      console.writeln("TS"+suffix+" = " + TS);
+
+      var superFit   = fitToReference(spUp, normalUp, statsStep, "sup_fit"+suffix);
+
+      var masks = buildMasks(finalW, finalH, scale, tile, tiles.coords, tiles.snrList, TS, TD, softness, suffix);
+
+      tryFeather(masks.vD, featherSigma);
+      tryFeather(masks.vN, featherSigma);
+      tryFeather(masks.vS, featherSigma);
+
+      blend3(drizzleFit, normalUp, superFit, masks, outId);
+   }
+   else
+   {
+      // 2-way blend (Normal + Drizzle) when lowP == 0: no superpixel path, no extra masks.
+      var masks2 = buildMasksDN(finalW, finalH, scale, tile, tiles.coords, tiles.snrList, TD, softness, suffix);
+
+      tryFeather(masks2.vD, featherSigma);
+      tryFeather(masks2.vN, featherSigma);
+
+      blend2(drizzleFit, normalUp, masks2, outId);
+   }
    var outW = ImageWindow.windowById(outId);
    if (!outW || outW.isNull) throw new Error("Failed to create: " + outId);
    return outW.mainView;
@@ -642,6 +768,7 @@ function Params()
    this.drizzleView = new View;
    this.normalView  = new View;
    this.bgView      = new View;
+   this.superView   = new View; // optional external superpixel image (mono or RGB)
 }
 
 function AppDialog(params)
@@ -678,6 +805,15 @@ function AppDialog(params)
    var bgList = new ViewList(this);
    bgList.getAll();
    bgList.onViewSelected = function(v){ params.bgView = v; };
+
+   var superLabel = new Label(this);
+   superLabel.text = "Superpixel View (optional):";
+
+   var superList = new ViewList(this);
+   superList.getAll();
+   superList.nullViewEnabled = true;
+   superList.onViewSelected = function(v){ params.superView = v; };
+
 
    var tileLabel = new Label(this);
    tileLabel.text = "Analysis Area Size (px):";
@@ -750,6 +886,8 @@ function AppDialog(params)
    top.add(row(drizzleLabel, drizzleList));
    top.add(row(normalLabel, normalList));
    top.add(row(bgLabel, bgList));
+   top.add(row(superLabel, superList));
+
 
    top.add(row(tileLabel, tileEdit));
    top.add(row(lowLabel, lowEdit));
@@ -811,13 +949,24 @@ function main()
 
    console.writeln("Auto mode: " + (isRGB ? "RGB (OSC)" : "Mono"));
 
+   // Optional external superpixel validation
+   if (!params.superView.isNull)
+   {
+      var supCh = params.superView.image.numberOfChannels;
+      if (isMono && supCh !== 1)
+         throw new Error("Mono mode: External superpixel view must be mono (1 channel).");
+      if (isRGB && supCh < 3)
+         throw new Error("RGB mode: External superpixel view must be RGB (3 channels).");
+   }
+
+
    safeCloseById("adaptive_blend");
 
    try
    {
       if (isMono)
       {
-         var out = runMono(params.drizzleView, params.normalView, params.bgView, params, "");
+         var out = runMono(params.drizzleView, params.normalView, params.bgView, params.superView, params, "");
          console.writeln("Done: " + out.id);
          closeIntermediatesForSuffix("");
       }
@@ -836,21 +985,36 @@ function main()
          var bgG  = extractChannelToMono(params.bgView, 1, "bg_G", "Extract BG G");
          var bgB  = extractChannelToMono(params.bgView, 2, "bg_B", "Extract BG B");
 
+         // Optional external superpixel (RGB): if provided, extract channels; otherwise script will generate superpixel.
+         var supR = new View, supG = new View, supB = new View;
+         if (!params.superView.isNull)
+         {
+            if (params.superView.image.numberOfChannels < 3)
+               throw new Error("RGB mode: External superpixel view must be RGB (3 channels) if provided.");
+            supR = extractChannelToMono(params.superView, 0, "sup_R", "Extract Super R");
+            supG = extractChannelToMono(params.superView, 1, "sup_G", "Extract Super G");
+            supB = extractChannelToMono(params.superView, 2, "sup_B", "Extract Super B");
+         }
+
+
          console.writeln("Process R...");
-         var outR = runMono(drzR, norR, bgR, params, "_R");
+         var outR = runMono(drzR, norR, bgR, supR, params, "_R");
          closeIntermediatesForSuffix("_R");
 
          console.writeln("Process G...");
-         var outG = runMono(drzG, norG, bgG, params, "_G");
+         var outG = runMono(drzG, norG, bgG, supG, params, "_G");
          closeIntermediatesForSuffix("_G");
 
          console.writeln("Process B...");
-         var outB = runMono(drzB, norB, bgB, params, "_B");
+         var outB = runMono(drzB, norB, bgB, supB, params, "_B");
          closeIntermediatesForSuffix("_B");
 
          console.writeln("Combine RGB -> adaptive_blend ...");
          combineRGBManual(outR, outG, outB, "adaptive_blend");
          console.writeln("Done: adaptive_blend");
+         // Close extracted external superpixel channels (if any)
+         safeCloseById("sup_R"); safeCloseById("sup_G"); safeCloseById("sup_B");
+
          // Close extracted channels and channel outputs (keep only inputs + adaptive_blend)
          safeCloseById("drz_R"); safeCloseById("drz_G"); safeCloseById("drz_B");
          safeCloseById("nor_R"); safeCloseById("nor_G"); safeCloseById("nor_B");
