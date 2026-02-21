@@ -1,3 +1,9 @@
+#feature-id    Utilities > Adaptive Drizzle Blend
+#feature-info  Adaptive Drizzle Blend 1.0<br/>by Daniel Espitia
+/*
+Adaptive Drizzle Blend Beta 1
+by Daniel Espitia
+*/
 /*
 Adaptive Drizzle Blend Beta 1
 by Daniel Espitia
