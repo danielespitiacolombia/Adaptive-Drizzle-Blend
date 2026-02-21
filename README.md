@@ -68,6 +68,94 @@ consistent transitions.
 5.  Continue processing as usual
 
 ------------------------------------------------------------------------
+## 📘 Usage Examples
+
+### 1️⃣ Using an External Superpixel Image  
+*(Recommended for advanced workflows)*
+
+**When to use:**  
+You have already generated a high-quality 2×2 superpixel image manually (e.g., using superpixel debayer or bin 2 capture) and want full control over smoothing behavior.
+
+#### Steps:
+1. Select:
+   - **Drizzle image** (2× resolution integration)
+   - **Normal image** (1× integration)
+   - **Background Preview**
+2. In **Superpixel View (optional)**, select your external superpixel image.
+3. Set:
+   - **Low-SNR Areas to Smooth (%)** > 0 (e.g., 10–20%)
+   - **High-SNR Areas for Drizzle (%)** (e.g., 50%)
+4. Run the script.
+
+#### What happens:
+- Low-SNR areas use your external superpixel.
+- Mid-SNR areas use the normal image.
+- High-SNR areas use drizzle.
+
+**Recommended when:**
+- You want to pre-control noise reduction.
+- You experimented with different binning or denoise strategies.
+- You want maximum reproducibility.
+
+---
+
+### 2️⃣ Using Script-Generated Superpixel  
+*(Default workflow)*
+
+**When to use:**  
+You do not have a pre-generated superpixel image.
+
+#### Steps:
+1. Select:
+   - **Drizzle image**
+   - **Normal image**
+   - **Background Preview**
+2. Leave **Superpixel View** empty.
+3. Set:
+   - **Low-SNR Areas to Smooth (%)** (e.g., 10%)
+   - **High-SNR Areas for Drizzle (%)** (e.g., 50%)
+4. Run the script.
+
+#### What happens:
+- The script generates a 2×2 superpixel from the Normal image.
+- It upsamples it to drizzle scale.
+- It blends Superpixel / Normal / Drizzle based on local SNR.
+
+**Recommended when:**
+- You want an automatic adaptive blend.
+- You do not want to create superpixel images manually.
+- You want a balanced noise vs resolution tradeoff.
+
+---
+
+### 3️⃣ Without Superpixel (Two-Way Blend Only)
+
+**When to use:**  
+You want a clean adaptive blend only between Normal and Drizzle, without additional smoothing.
+
+#### Steps:
+1. Select:
+   - **Drizzle image**
+   - **Normal image**
+   - **Background Preview**
+2. Leave **Superpixel View** empty.
+3. Set:
+   - **Low-SNR Areas to Smooth (%) = 0**
+4. Run the script.
+
+#### What happens:
+- The superpixel path is completely disabled.
+- No superpixel images are generated.
+- The script blends only:
+  - Normal in low-SNR areas
+  - Drizzle in high-SNR areas.
+
+**Recommended when:**
+- Your integration already has good SNR.
+- You only want resolution recovery without additional smoothing.
+- You want minimal memory usage.
+
+---
 
 ## License
 
