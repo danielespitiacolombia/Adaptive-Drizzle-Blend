@@ -2,8 +2,6 @@
 Adaptive Drizzle Blend Beta 1
 by Daniel Espitia
 
-UI version WITHOUT #include (PixInsight 1.8.9-3 friendly)
-
 - Select open views (Drizzle, Normal 1x, Background Preview)
 - Auto-detect MONO vs RGB (OSC) based on numberOfChannels (checkbox removed)
 - RGB mode: process R/G/B independently + recombine to a single RGB result
