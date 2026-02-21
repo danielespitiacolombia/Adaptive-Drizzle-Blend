@@ -45,7 +45,7 @@ This version works in pixinsight 1.9.3
 ## Download
 
 👉 **Direct Download:**\
-[Download Adaptive Drizzle Blend (.js)](https://raw.githubusercontent.com/danielespitiacolombia/Adaptive-Drizzle-Blend/scripts/Adaptive_Drizzle_Blend.js)
+[Download Adaptive Drizzle Blend (.js)](https://raw.githubusercontent.com/danielespitiacolombia/Adaptive-Drizzle-Blend/scripts/AdaptiveDrizzleBlend.js)
 
 ------------------------------------------------------------------------
 
