@@ -17,8 +17,6 @@ This produces improved detail where data supports it, while reducing
 noise where the signal is weak --- all with smooth, physically
 consistent transitions.
 
-This version works in pixinsight 1.9.3
-
 ------------------------------------------------------------------------
 
 ## Requirements
