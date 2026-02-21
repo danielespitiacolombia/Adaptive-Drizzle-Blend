@@ -23,7 +23,7 @@ This version works in pixinsight 1.9.3
 
 ## Requirements
 
--   PixInsight (recent versions)
+-   PixInsight 1.9.3
 -   Linear starless images only
 -   Drizzle and Normal integrations must be aligned
 -   A background preview in the normal integration image (for noise estimation)
