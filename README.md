@@ -17,14 +17,14 @@ This produces improved detail where data supports it, while reducing
 noise where the signal is weak --- all with smooth, physically
 consistent transitions.
 
-This version works only with monochrome starless images.
+This version works with starless images.
 
 ------------------------------------------------------------------------
 
 ## Requirements
 
 -   PixInsight (recent versions)
--   Linear monochrome images only (For color images, you must separate the R, G, and B channels)
+-   Linear starless images only
 -   Drizzle and Normal integrations must be aligned
 -   A background preview in the normal integration image (for noise estimation)
     
@@ -62,8 +62,10 @@ This version works only with monochrome starless images.
 
 1.  Perform Normal Integration (1x)
 2.  Perform Drizzle Integration (2x)
-3.  Remove stars from both images
-4.  Create a small background preview (in the Normal Integration image)
+3.  Color calibration
+4.  Gradient correction
+5.  Remove stars from both images
+6.  Create a small background preview (in the Normal Integration image)
 4.  Run Adaptive Drizzle Blend
 5.  Continue processing as usual
 
