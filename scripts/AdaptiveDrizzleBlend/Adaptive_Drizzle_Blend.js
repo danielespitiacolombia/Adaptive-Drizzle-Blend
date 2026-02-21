@@ -2,62 +2,58 @@
 Adaptive Drizzle Blend Beta 1
 by Daniel Espitia
 
-MONO LINEAR adaptive blend using:
-- DRIZZLE (high-res) + NORMAL (1x) + SUPERPIXEL (2x2 from 1x, then upscaled)
-- SNR per tile computed from NORMAL(1x) using sigma_bg from a BACKGROUND PREVIEW (MAD)
-- Always applies global intensity matching (robust fit: median+MAD) to DRIZZLE and SUPERPIXEL, matching NORMAL_UP
-- Always uses SUPERPIXEL (3-way)
-- UI simplified: only 4 controls + image/preview selectors
+UI version WITHOUT #include (PixInsight 1.8.9-3 friendly)
 
-UI fields:
-- Analysis Area Size (px)            [tile @1x]
-- Low-SNR Areas to Smooth (%)        [bottom percentile -> superpixel] (default 10)
-- High-SNR Areas for Drizzle (%)     [top percentile -> drizzle] (default 50)
-- Transition Smoothness              [feather sigma @final]
-
-Hidden:
-- Stride = tile/2
-- Softness = 3.0
-- Stats step = 8
-
-Also:
-- Intermediates are closed at the end (keeps inputs and final result)
-
-NEW:
-- Console progress shown on ONE line using backspaces (no spam)
-- Throttled progress updates (less frequent)
+- Select open views (Drizzle, Normal 1x, Background Preview)
+- Auto-detect MONO vs RGB (OSC) based on numberOfChannels (checkbox removed)
+- RGB mode: process R/G/B independently + recombine to a single RGB result
+- SNR per tile computed on Normal 1x using sigma from Background Preview (MAD)
+- 3-way blend: Superpixel (low SNR) + Normal (mid) + Drizzle (high)
+- Robust global intensity matching enabled by default
+- Superpixel enabled by default (2x2 computed from Normal 1x BEFORE upsampling)
+- Output image id: adaptive_blend (only)
+- Closes intermediate images at end (keeps inputs + adaptive_blend)
 */
 
+var APP_TITLE  = "Adaptive Drizzle Blend Beta 1";
+var APP_AUTHOR = "by Daniel Espitia";
+
+// ---------------- Console progress (single-line) ----------------
 var __lastProgLen = 0;
-
-function showProgress(current, total, prefix)
+function progressLine(pct, label)
 {
-   if (total <= 0) total = 1;
-   var p = Math.floor(100 * current / total);
-   if (p < 0) p = 0; if (p > 100) p = 100;
-
-   var msg = prefix + " " + p + "%";
-
+   var s = (label ? (label + " ") : "") + pct.toFixed(1) + "%";
    if (__lastProgLen > 0)
-      console.write( Array(__lastProgLen + 1).join("\b") );
-
-   console.write(msg);
-   __lastProgLen = msg.length;
-
+      console.write(Array(__lastProgLen + 1).join("\b"));
+   console.write(s);
+   __lastProgLen = s.length;
    if (typeof console.flush === "function") console.flush();
+}
+function progressDone()
+{
+   if (__lastProgLen > 0) console.writeln("");
+   __lastProgLen = 0;
+}
 
-   if (current >= total)
+// ---------------- Utilities ----------------
+function clamp01(x){ return x < 0 ? 0 : (x > 1 ? 1 : x); }
+
+function safeCloseById(id)
+{
+   var w = ImageWindow.windowById(id);
+   if (w && !w.isNull)
    {
-      console.writeln("");
-      __lastProgLen = 0;
+      try { w.forceClose(); }
+      catch (e) { try { w.close(); } catch (e2) {} }
    }
 }
 
-function checkAbort()
+function beginProcessCompat(view)
 {
-   if (console.abortRequested)
-      throw new Error("Aborted by user.");
+   try { view.beginProcess(); }
+   catch (e) { try { view.beginProcess(0); } catch (e2) { throw e2; } }
 }
+function endProcessCompat(view){ try { view.endProcess(); } catch (e) {} }
 
 function robustMAD(a)
 {
@@ -68,9 +64,9 @@ function robustMAD(a)
 
    var d = new Array(n);
    for (var i=0;i<n;i++) d[i] = Math.abs(a[i]-med);
+
    d.sort(function(x,y){return x-y;});
    var mad = d[(n/2)|0];
-
    return 1.4826*mad + 1e-6;
 }
 
@@ -84,330 +80,240 @@ function percentile(a,p)
    return a[idx];
 }
 
-function clamp01(x){ return x<0?0:(x>1?1:x); }
-
-function safeCloseWindowById(id)
+// --- Channel-safe sample/setSample helpers (PI versions differ) ---
+function getSample(img, x, y, c)
 {
-   var w = ImageWindow.windowById(id);
-   if (w && !w.isNull)
+   // Try 3-arg sample(x,y,c)
+   try { return img.sample(x, y, c); } catch (e) {}
+   // Fallback: selectedChannel
+   try
    {
-      try { w.forceClose(); }
-      catch (e) { try { w.close(); } catch (e2) {} }
+      var old = img.selectedChannel;
+      img.selectedChannel = c;
+      var v = img.sample(x, y);
+      img.selectedChannel = old;
+      return v;
+   }
+   catch (e2)
+   {
+      // Last resort
+      return img.sample(x, y);
    }
 }
 
-function closeIntermediateWindows()
+function setSampleC(img, v, x, y, c)
 {
-   var ids = [
-      "nodrizzle_up",
-      "superpixel_small",
-      "superpixel_up",
-      "drizzle_fit",
-      "super_fit",
-      "mask_D",
-      "mask_N",
-      "mask_S"
-   ];
-   for (var i=0; i<ids.length; i++)
-      safeCloseWindowById(ids[i]);
-}
-
-function beginProcessCompat(view)
-{
-   try { view.beginProcess(); }
-   catch (e)
+   // Try 4-arg setSample(v,x,y,c)
+   try { img.setSample(v, x, y, c); return; } catch (e) {}
+   // Fallback: selectedChannel
+   try
    {
-      try { view.beginProcess(0); }
-      catch (e2) { throw e2; }
+      var old = img.selectedChannel;
+      img.selectedChannel = c;
+      img.setSample(v, x, y);
+      img.selectedChannel = old;
+      return;
+   }
+   catch (e2)
+   {
+      img.setSample(v, x, y);
    }
 }
 
-function endProcessCompat(view){ try { view.endProcess(); } catch (e) {} }
-
-function createMonoImage(id, W, H)
+// ---------------- Create images (via NewImage, no includes) ----------------
+function createImage(id, W, H, nCh, isColor)
 {
-   safeCloseWindowById(id);
+   safeCloseById(id);
 
    var P = new NewImage;
    P.id = id;
    P.width = W;
    P.height = H;
-   P.numberOfChannels = 1;
+   P.numberOfChannels = nCh;
 
+   // Try to force a 32-bit float image when possible
    try { P.bitsPerSample = 32; } catch(e) {}
    try { P.floatSample = true; } catch(e) {}
-   try { P.alpha = false; } catch(e) {}
-   try { P.color = false; } catch(e) {}
 
+   // No alpha
+   try { P.alpha = false; } catch(e) {}
+
+   // Color handling differs between PI versions.
+   // We try multiple properties to ensure RGB images are created correctly.
+   if (isColor)
+   {
+      // Newer builds
+      try { P.color = true; } catch(e1) {}
+
+      // Some builds expose a "colorSpace" property on NewImage
+      try
+      {
+         if (typeof NewImage !== "undefined")
+         {
+            if (typeof NewImage.prototype.RGB === "number") P.colorSpace = NewImage.prototype.RGB;
+            else if (typeof NewImage.prototype.RGBColor === "number") P.colorSpace = NewImage.prototype.RGBColor;
+         }
+      }
+      catch(e2) {}
+   }
+   else
+   {
+      try { P.color = false; } catch(e3) {}
+      try
+      {
+         if (typeof NewImage !== "undefined")
+         {
+            if (typeof NewImage.prototype.Gray === "number") P.colorSpace = NewImage.prototype.Gray;
+            else if (typeof NewImage.prototype.Grayscale === "number") P.colorSpace = NewImage.prototype.Grayscale;
+         }
+      }
+      catch(e4) {}
+   }
+
+   // Execute
    if (typeof P.executeGlobal === "function")
       P.executeGlobal();
    else if (typeof P.executeOn === "function" && ImageWindow.activeWindow && !ImageWindow.activeWindow.isNull)
       P.executeOn(ImageWindow.activeWindow.mainView);
    else
-      throw new Error("Cannot run NewImage in this PixInsight version.");
+      throw new Error("NewImage cannot be executed in this PixInsight version.");
 
-   var win = ImageWindow.windowById(id);
-   if (!win || win.isNull)
-      throw new Error("Cannot find created window: " + id);
+   var w = ImageWindow.windowById(id);
+   if (!w || w.isNull) throw new Error("Cannot create image: " + id);
+   w.show();
 
-   win.show();
-   return win;
-}
-
-// Nearest upsample (mono) + progress
-function upsampleNearestMono(srcView, W, H, outId, progressPrefix)
-{
-   var src = srcView.image;
-   var w = src.width, h = src.height;
-
-   var win = createMonoImage(outId, W, H);
-   var dstView = win.mainView;
-   var dst = dstView.image;
-
-   src.selectedChannel = 0;
-   dst.selectedChannel = 0;
-
-   beginProcessCompat(dstView);
+   // Sanity check: in some builds, RGB may still come out as mono.
+   // We'll report it but continue; combine function has a PixelMath fallback.
    try
    {
-      for (var y=0; y<H; y++)
-      {
-         if ((y & 63) === 0) { showProgress(y+1, H, progressPrefix); checkAbort(); }
-         var sy = Math.floor(y * h / H);
-         for (var x=0; x<W; x++)
-         {
-            var sx = Math.floor(x * w / W);
-            dst.setSample(src.sample(sx, sy), x, y);
-         }
-      }
-      showProgress(H, H, progressPrefix);
+      var ch = w.mainView.image.numberOfChannels;
+      if (isColor && ch < 3)
+         console.writeln("Warning: '" + id + "' created with " + ch + " channel(s) (expected RGB).");
    }
-   finally { endProcessCompat(dstView); }
+   catch(e5) {}
 
-   return dstView;
+   return w.mainView;
 }
 
-// Superpixel 2x2 average (mono) + progress
-function makeSuperpixel2x2Mono(srcView, outIdSmall)
+function createMono(id,W,H){ return createImage(id,W,H,1,false); }
+function createRGB(id,W,H){ return createImage(id,W,H,3,true); }
+
+// ---------------- Basic operations (mono) ----------------
+function extractChannelToMono(srcView, channelIndex, outId, label)
 {
    var src = srcView.image;
    var W = src.width, H = src.height;
 
-   var W2 = Math.floor(W/2);
-   var H2 = Math.floor(H/2);
-   if (W2 < 1 || H2 < 1)
-      throw new Error("Image too small for 2x2 superpixel.");
+   var outView = createMono(outId, W, H);
+   var dst = outView.image;
 
-   var win = createMonoImage(outIdSmall, W2, H2);
-   var dstView = win.mainView;
-   var dst = dstView.image;
+   beginProcessCompat(outView);
+   try
+   {
+      for (var y=0; y<H; y++)
+      {
+         if ((y & 127) === 0) progressLine(100*(y+1)/H, label);
+         for (var x=0; x<W; x++)
+            dst.setSample(getSample(src, x, y, channelIndex), x, y);
+      }
+   }
+   finally { endProcessCompat(outView); progressDone(); }
 
-   src.selectedChannel = 0;
-   dst.selectedChannel = 0;
+   return outView;
+}
 
-   beginProcessCompat(dstView);
+function upsampleNearestMono(srcView, targetW, targetH, outId, label)
+{
+   var src = srcView.image;
+   var w = src.width, h = src.height;
+
+   var outView = createMono(outId, targetW, targetH);
+   var dst = outView.image;
+
+   beginProcessCompat(outView);
+   try
+   {
+      for (var y=0; y<targetH; y++)
+      {
+         if ((y & 127) === 0) progressLine(100*(y+1)/targetH, label);
+         var sy = Math.floor(y * h / targetH);
+         for (var x=0; x<targetW; x++)
+         {
+            var sx = Math.floor(x * w / targetW);
+            dst.setSample(src.sample(sx,sy), x, y);
+         }
+      }
+   }
+   finally { endProcessCompat(outView); progressDone(); }
+
+   return outView;
+}
+
+function superpixel2x2Mono(srcView, outIdSmall, label)
+{
+   var src = srcView.image;
+   var W = src.width, H = src.height;
+   var W2 = Math.floor(W/2), H2 = Math.floor(H/2);
+   if (W2 < 1 || H2 < 1) throw new Error("Image too small for 2x2 superpixel.");
+
+   var outView = createMono(outIdSmall, W2, H2);
+   var dst = outView.image;
+
+   beginProcessCompat(outView);
    try
    {
       for (var y=0; y<H2; y++)
       {
-         if ((y & 63) === 0) { showProgress(y+1, H2, "Superpixel:"); checkAbort(); }
+         if ((y & 127) === 0) progressLine(100*(y+1)/H2, label);
          var sy = 2*y;
          for (var x=0; x<W2; x++)
          {
             var sx = 2*x;
-
-            var s00 = src.sample(sx,   sy);
-            var s10 = src.sample(sx+1, sy);
-            var s01 = src.sample(sx,   sy+1);
-            var s11 = src.sample(sx+1, sy+1);
-
-            dst.setSample(0.25*(s00+s10+s01+s11), x, y);
+            var v = 0.25 * (
+               src.sample(sx,sy) + src.sample(sx+1,sy) +
+               src.sample(sx,sy+1) + src.sample(sx+1,sy+1)
+            );
+            dst.setSample(v, x, y);
          }
       }
-      showProgress(H2, H2, "Superpixel:");
    }
-   finally { endProcessCompat(dstView); }
+   finally { endProcessCompat(outView); progressDone(); }
 
-   return dstView;
+   return outView;
 }
 
-// sigma_bg from background preview (MAD)
-function sigmaFromPreviewMAD(previewView, step)
+// ---------------- Background sigma (MAD) ----------------
+function sigmaFromPreviewMAD(bgView, step)
 {
-   var img = previewView.image;
-   img.selectedChannel = 0;
+   var img = bgView.image;
    var W = img.width, H = img.height;
-   if (W < 10 || H < 10)
-      throw new Error("Background preview too small.");
+   if (W < 10 || H < 10) throw new Error("Background preview too small.");
 
-   var samples = [];
+   var a = [];
    for (var y=0; y<H; y+=step)
       for (var x=0; x<W; x+=step)
-         samples.push(img.sample(x,y));
+         a.push(img.sample(x,y));
 
-   return robustMAD(samples);
+   return robustMAD(a);
 }
 
-// global stats (median+MAD) for robust fit
+// ---------------- Robust global intensity fit (median/MAD) ----------------
 function sampleStatsMono(view, step)
 {
    var img = view.image;
-   img.selectedChannel = 0;
    var W = img.width, H = img.height;
 
-   var samples = [];
+   var a = [];
    for (var y=0; y<H; y+=step)
       for (var x=0; x<W; x+=step)
-         samples.push(img.sample(x,y));
+         a.push(img.sample(x,y));
 
-   var med = percentile(samples.slice(), 50);
-   var mad = robustMAD(samples.slice());
-   return {med: med, mad: mad};
+   return { med: percentile(a.slice(), 50), mad: robustMAD(a.slice()) };
 }
 
-// SNR per tile in 1x using fixed sigma_bg + progress
-function computeTileSNR(baseView, W, H, tile, stride, sigma_bg)
-{
-   var img = baseView.image;
-   img.selectedChannel = 0;
-
-   var snrList = [];
-   var coords = [];
-
-   var totalTiles = 0;
-   for (var y0=0; y0<=H-tile; y0+=stride)
-      for (var x0=0; x0<=W-tile; x0+=stride)
-         totalTiles++;
-
-   var tileIndex = 0;
-
-   for (var y0=0; y0<=H-tile; y0+=stride)
-      for (var x0=0; x0<=W-tile; x0+=stride)
-      {
-         tileIndex++;
-         if ((tileIndex & 31) === 0 || tileIndex === totalTiles)
-         {
-            showProgress(tileIndex, totalTiles, "Computing SNR:");
-            checkAbort();
-         }
-
-         var samples = new Array(tile*tile);
-         var k = 0;
-         for (var y=0; y<tile; y++)
-            for (var x=0; x<tile; x++)
-               samples[k++] = img.sample(x0+x, y0+y);
-
-         var med = percentile(samples.slice(), 50);
-         var p95 = percentile(samples.slice(), 95);
-
-         var snr = (p95 - med)/sigma_bg;
-
-         snrList.push(snr);
-         coords.push({x0:x0, y0:y0});
-      }
-
-   showProgress(totalTiles, totalTiles, "Computing SNR:");
-   return {snrList: snrList, coords: coords};
-}
-
-function logistic01(snr, T, softness)
-{
-   if (softness <= 0) return (snr >= T) ? 1.0 : 0.0;
-   var z = (snr - T) * (4.0/softness);
-   return 1.0/(1.0 + Math.exp(-z));
-}
-
-// Init masks to avoid black borders
-function initMasks3(iD, iS, iN, W, H)
-{
-   for (var y=0; y<H; y++)
-      for (var x=0; x<W; x++)
-      {
-         iD.setSample(0.0, x, y);
-         iS.setSample(0.0, x, y);
-         iN.setSample(1.0, x, y);
-      }
-}
-
-// Build 3 masks at final resolution (projecting tiles from 1x) + progress
-function buildMasks3Scaled(finalW, finalH, scale, tile1x, coords1x, snrList, TS, TD, softness)
-{
-   var tileF = tile1x * scale;
-
-   var wDwin = createMonoImage("mask_D", finalW, finalH);
-   var wSwin = createMonoImage("mask_S", finalW, finalH);
-   var wNwin = createMonoImage("mask_N", finalW, finalH);
-
-   var vD = wDwin.mainView, vS = wSwin.mainView, vN = wNwin.mainView;
-   var iD = vD.image, iS = vS.image, iN = vN.image;
-   iD.selectedChannel = 0; iS.selectedChannel = 0; iN.selectedChannel = 0;
-
-   beginProcessCompat(vD); beginProcessCompat(vS); beginProcessCompat(vN);
-   try
-   {
-      initMasks3(iD, iS, iN, finalW, finalH);
-
-      for (var i=0; i<snrList.length; i++)
-      {
-         if ((i & 31) === 0 || i === snrList.length-1)
-         {
-            showProgress(i+1, snrList.length, "Building masks:");
-            checkAbort();
-         }
-
-         var snr = snrList[i];
-
-         var wD = logistic01(snr, TD, softness);
-         var wS = 1.0 - logistic01(snr, TS, softness);
-         var wN = 1.0 - wD - wS;
-
-         wD = clamp01(wD); wS = clamp01(wS); wN = clamp01(wN);
-         var sum = wD + wS + wN;
-         if (sum < 1e-6) { wN = 1.0; sum = 1.0; }
-         wD /= sum; wS /= sum; wN /= sum;
-
-         var X0 = coords1x[i].x0 * scale;
-         var Y0 = coords1x[i].y0 * scale;
-
-         var maxX = Math.min(finalW, X0 + tileF);
-         var maxY = Math.min(finalH, Y0 + tileF);
-
-         for (var y=Y0; y<maxY; y++)
-            for (var x=X0; x<maxX; x++)
-            {
-               iD.setSample(wD, x, y);
-               iS.setSample(wS, x, y);
-               iN.setSample(wN, x, y);
-            }
-      }
-      showProgress(snrList.length, snrList.length, "Building masks:");
-   }
-   finally
-   {
-      endProcessCompat(vD); endProcessCompat(vS); endProcessCompat(vN);
-   }
-
-   return {vD:vD, vS:vS, vN:vN};
-}
-
-function feather(view, sigma)
-{
-   if (sigma <= 0) return;
-   try
-   {
-      var conv = new Convolution;
-      conv.mode = Convolution.prototype.Parametric;
-      conv.shape = 2;
-      conv.sigma = sigma;
-      conv.executeOn(view);
-   }
-   catch(e) {}
-}
-
-// Robust global intensity fit via PixelMath: out = a*in + b
 function applyLinearFit(inView, a, b, outId)
 {
-   safeCloseWindowById(outId);
+   safeCloseById(outId);
 
    var PM = new PixelMath;
    PM.expression = "(" + a + ")*" + inView.id + " + (" + b + ")";
@@ -420,7 +326,7 @@ function applyLinearFit(inView, a, b, outId)
    PM.executeOn(inView);
 
    var w = ImageWindow.windowById(outId);
-   if (!w || w.isNull) throw new Error("Failed to create " + outId);
+   if (!w || w.isNull) throw new Error("Failed to create: " + outId);
    return w.mainView;
 }
 
@@ -436,11 +342,143 @@ function fitToReference(inView, refView, step, outId)
    return applyLinearFit(inView, a, b, outId);
 }
 
-function blend3(drizzleView, normalUpView, superUpView, outId)
+// ---------------- SNR per tile (mono) ----------------
+function computeTilesSNR(normal1xView, tile, stride, sigma_bg, label)
 {
-   safeCloseWindowById(outId);
+   var img = normal1xView.image;
+   var W = img.width, H = img.height;
+
+   var snrList = [];
+   var coords = [];
+
+   var count = 0;
+   for (var y0=0; y0<=H-tile; y0+=stride)
+      for (var x0=0; x0<=W-tile; x0+=stride)
+         count++;
+
+   var idx = 0;
+   for (var y0=0; y0<=H-tile; y0+=stride)
+      for (var x0=0; x0<=W-tile; x0+=stride)
+      {
+         idx++;
+         if ((idx & 31) === 0 || idx === count)
+            progressLine(100*idx/count, label);
+
+         var a = new Array(tile*tile);
+         var k = 0;
+         for (var y=0; y<tile; y++)
+            for (var x=0; x<tile; x++)
+               a[k++] = img.sample(x0+x, y0+y);
+
+         var med = percentile(a.slice(), 50);
+         var p95 = percentile(a.slice(), 95);
+         var snr = (p95 - med) / sigma_bg;
+
+         snrList.push(snr);
+         coords.push({x0:x0, y0:y0});
+      }
+
+   progressDone();
+   return { snrList: snrList, coords: coords, W: W, H: H };
+}
+
+function logistic01(snr, T, softness)
+{
+   if (softness <= 0) return (snr >= T) ? 1.0 : 0.0;
+   var z = (snr - T) * (4.0/softness);
+   return 1.0/(1.0 + Math.exp(-z));
+}
+
+function tryFeather(maskView, sigma)
+{
+   if (sigma <= 0) return;
+   try
+   {
+      var conv = new Convolution;
+      conv.mode = Convolution.prototype.Parametric;
+      conv.shape = 2; // Gaussian
+      conv.sigma = sigma;
+      conv.executeOn(maskView);
+   }
+   catch (e) {}
+}
+
+function buildMasks(finalW, finalH, scale, tile1x, coords, snrList, TS, TD, softness, suffix)
+{
+   var tileF = tile1x * scale;
+
+   var idD = "maskD" + suffix;
+   var idN = "maskN" + suffix;
+   var idS = "maskS" + suffix;
+
+   var vD = createMono(idD, finalW, finalH);
+   var vN = createMono(idN, finalW, finalH);
+   var vS = createMono(idS, finalW, finalH);
+
+   var iD = vD.image, iN = vN.image, iS = vS.image;
+
+   beginProcessCompat(vD); beginProcessCompat(vN); beginProcessCompat(vS);
+   try
+   {
+      for (var y=0; y<finalH; y++)
+      {
+         if ((y & 127) === 0) progressLine(100*(y+1)/finalH, "Init masks");
+         for (var x=0; x<finalW; x++)
+         {
+            iD.setSample(0, x, y);
+            iS.setSample(0, x, y);
+            iN.setSample(1, x, y);
+         }
+      }
+      progressDone();
+
+      var n = snrList.length;
+      for (var t=0; t<n; t++)
+      {
+         if ((t & 31) === 0 || t === n-1)
+            progressLine(100*(t+1)/n, "Fill masks");
+
+         var snr = snrList[t];
+
+         var wD = logistic01(snr, TD, softness);
+         var wS = 1.0 - logistic01(snr, TS, softness);
+         var wN = 1.0 - wD - wS;
+
+         wD = clamp01(wD); wS = clamp01(wS); wN = clamp01(wN);
+         var sum = wD + wS + wN;
+         if (sum < 1e-6) { wN = 1.0; sum = 1.0; }
+         wD /= sum; wS /= sum; wN /= sum;
+
+         var X0 = coords[t].x0 * scale;
+         var Y0 = coords[t].y0 * scale;
+         var maxX = Math.min(finalW, X0 + tileF);
+         var maxY = Math.min(finalH, Y0 + tileF);
+
+         for (var yy=Y0; yy<maxY; yy++)
+            for (var xx=X0; xx<maxX; xx++)
+            {
+               iD.setSample(wD, xx, yy);
+               iS.setSample(wS, xx, yy);
+               iN.setSample(wN, xx, yy);
+            }
+      }
+      progressDone();
+   }
+   finally { endProcessCompat(vD); endProcessCompat(vN); endProcessCompat(vS); }
+
+   return { idD:idD, idN:idN, idS:idS, vD:vD, vN:vN, vS:vS };
+}
+
+function blend3(drizzleView, normalUpView, superUpView, maskIds, outId)
+{
+   safeCloseById(outId);
+
    var PM = new PixelMath;
-   PM.expression = "mask_S*" + superUpView.id + " + mask_N*" + normalUpView.id + " + mask_D*" + drizzleView.id;
+   PM.expression =
+      maskIds.idS + "*" + superUpView.id + " + " +
+      maskIds.idN + "*" + normalUpView.id + " + " +
+      maskIds.idD + "*" + drizzleView.id;
+
    PM.useSingleExpression = true;
    PM.generateOutput = true;
    PM.createNewImage = true;
@@ -450,214 +488,384 @@ function blend3(drizzleView, normalUpView, superUpView, outId)
    PM.executeOn(drizzleView);
 }
 
-// ---------------- UI (simplified) ----------------
-function AdaptiveData()
+function combineRGBManual(rView, gView, bView, outId)
 {
-   var w = ImageWindow.activeWindow;
-   if (!w.isNull){ this.drizzleView = w.currentView; this.normalView = w.currentView; }
-   else { this.drizzleView = new View; this.normalView = new View; }
+   safeCloseById(outId);
 
-   this.bgPreview = new View;
+   // PixelMath per-channel output (compatible with PI 1.8.9-3: no rgb() function)
+   var PM = new PixelMath;
+   PM.useSingleExpression = false;
 
-   // UI params (defaults)
-   this.tile = 256;
-   this.lowSmooth = 10;   // DEFAULT CHANGED TO 10%
-   this.highDrizzle = 50;
-   this.transition = 30.0;
+   // Some PI versions use expression0/1/2, others use expressions array.
+   try
+   {
+      PM.expression0 = rView.id;
+      PM.expression1 = gView.id;
+      PM.expression2 = bView.id;
+   }
+   catch (e0)
+   {
+      // Fallback to expressions[] if available
+      try
+      {
+         PM.expressions = [ rView.id, gView.id, bView.id ];
+      }
+      catch (e1)
+      {
+         throw new Error("This PixInsight build does not support per-channel PixelMath expressions.");
+      }
+   }
 
-   // Internal fixed params
-   this.statsStep = 8;
-   this.softness = 3.0;
+   PM.generateOutput = true;
+   PM.createNewImage = true;
+   PM.newImageId = outId;
+   PM.newImageSampleFormat = PixelMath.prototype.f32;
+   PM.rescale = false;
+
+   // Try to force RGB output if the property exists
+   try { PM.newImageColorSpace = PixelMath.prototype.RGB; } catch (e2) {}
+
+   PM.executeOn(rView);
+
+   var w = ImageWindow.windowById(outId);
+   if (!w || w.isNull)
+      throw new Error("Failed to create: " + outId);
+
+   // Sanity: ensure 3 channels
+   try
+   {
+      if (w.mainView.image.numberOfChannels < 3)
+         console.writeln("Warning: '" + outId + "' created with " + w.mainView.image.numberOfChannels + " channel(s).");
+   }
+   catch (e3) {}
+
+   return w.mainView;
 }
-var data = new AdaptiveData();
 
-function clampInt(x, lo, hi, fb){ var n=parseInt(x,10); if(isNaN(n))return fb; return n<lo?lo:(n>hi?hi:n); }
-function clampFloat(x, lo, hi, fb){ var n=parseFloat(x); if(isNaN(n))return fb; return n<lo?lo:(n>hi?hi:n); }
-
-function AppDialog()
+// ---------------- Core pipeline (mono) ----------------
+function runMono(drizzleMono, normal1xMono, bgMono, params, suffix)
 {
-   this.__base__ = Dialog; this.__base__();
+   var statsStep = 8;
+   var softness  = 3.0;
+   var tile = params.tile;
+   var stride = Math.max(1, Math.floor(tile/2));
+   var lowP  = params.lowP;
+   var highP = params.highP;
+   var featherSigma = params.featherSigma;
 
-   this.titleLabel = new Label(this);
-   this.titleLabel.text = "Adaptive Drizzle Blend Beta 1";
-   var f = this.titleLabel.font; f.bold = true; this.titleLabel.font = f;
+   if (lowP + highP > 100)
+      throw new Error("Low-SNR% + High-SNR% cannot exceed 100.");
 
-   this.authorLabel = new Label(this);
-   this.authorLabel.text = "by Daniel Espitia";
+   var finalW = drizzleMono.image.width, finalH = drizzleMono.image.height;
+   var W1 = normal1xMono.image.width, H1 = normal1xMono.image.height;
 
-   // Views
-   this.drizzleLabel = new Label(this); this.drizzleLabel.text = "Drizzle View:";
-   this.drizzleList = new ViewList(this); this.drizzleList.getAll();
-   this.drizzleList.currentView = data.drizzleView;
-   this.drizzleList.onViewSelected = function(v){ data.drizzleView = v; };
-   this.drizzleSizer = new HorizontalSizer; this.drizzleSizer.add(this.drizzleLabel); this.drizzleSizer.add(this.drizzleList);
+   var scaleX = finalW / W1;
+   var scaleY = finalH / H1;
+   var scale = Math.round(scaleX);
 
-   this.normalLabel = new Label(this); this.normalLabel.text = "Normal View (1x):";
-   this.normalList = new ViewList(this); this.normalList.getAll();
-   this.normalList.currentView = data.normalView;
-   this.normalList.onViewSelected = function(v){ data.normalView = v; };
-   this.normalSizer = new HorizontalSizer; this.normalSizer.add(this.normalLabel); this.normalSizer.add(this.normalList);
+   if (Math.abs(scaleX-scale) > 1e-3 || Math.abs(scaleY-scale) > 1e-3 || scale < 1)
+      throw new Error("Drizzle/Normal scale must be integer (1x, 2x, ...).");
 
-   this.bgLabel = new Label(this); this.bgLabel.text = "Background Preview:";
-   this.bgList = new ViewList(this); this.bgList.getAll();
-   this.bgList.currentView = data.bgPreview;
-   this.bgList.onViewSelected = function(v){ data.bgPreview = v; };
-   this.bgSizer = new HorizontalSizer; this.bgSizer.add(this.bgLabel); this.bgSizer.add(this.bgList);
+   console.writeln("Scale"+suffix+" = " + scale + "x");
 
-   // Params
-   this.tileLabel = new Label(this); this.tileLabel.text = "Analysis Area Size (px):";
-   this.tileEdit = new Edit(this); this.tileEdit.text = ""+data.tile;
-   this.tileEdit.onTextUpdated = function(s){ data.tile = clampInt(s,16,4096,data.tile); };
-   this.tileSizer = new HorizontalSizer; this.tileSizer.add(this.tileLabel); this.tileSizer.add(this.tileEdit);
+   var normalUp = (W1 === finalW && H1 === finalH) ? normal1xMono
+                 : upsampleNearestMono(normal1xMono, finalW, finalH, "nodrizzle_up"+suffix, "Upsample normal");
 
-   this.lowLabel = new Label(this); this.lowLabel.text = "Low-SNR Areas to Smooth (%):";
-   this.lowEdit = new Edit(this); this.lowEdit.text = ""+data.lowSmooth;
-   this.lowEdit.onTextUpdated = function(s){ data.lowSmooth = clampInt(s,0,100,data.lowSmooth); };
-   this.lowSizer = new HorizontalSizer; this.lowSizer.add(this.lowLabel); this.lowSizer.add(this.lowEdit);
+   var spSmall = superpixel2x2Mono(normal1xMono, "super_small"+suffix, "Superpixel 2x2");
+   var spUp = upsampleNearestMono(spSmall, finalW, finalH, "super_up"+suffix, "Upsample super");
 
-   this.highLabel = new Label(this); this.highLabel.text = "High-SNR Areas for Drizzle (%):";
-   this.highEdit = new Edit(this); this.highEdit.text = ""+data.highDrizzle;
-   this.highEdit.onTextUpdated = function(s){ data.highDrizzle = clampInt(s,0,100,data.highDrizzle); };
-   this.highSizer = new HorizontalSizer; this.highSizer.add(this.highLabel); this.highSizer.add(this.highEdit);
+   var sigma_bg = sigmaFromPreviewMAD(bgMono, statsStep);
+   console.writeln("sigma_bg"+suffix+" = " + sigma_bg);
 
-   this.trLabel = new Label(this); this.trLabel.text = "Transition Smoothness:";
-   this.trEdit = new Edit(this); this.trEdit.text = ""+data.transition;
-   this.trEdit.onTextUpdated = function(s){ data.transition = clampFloat(s,0,200,data.transition); };
-   this.trSizer = new HorizontalSizer; this.trSizer.add(this.trLabel); this.trSizer.add(this.trEdit);
+   var drizzleFit = fitToReference(drizzleMono, normalUp, statsStep, "drz_fit"+suffix);
+   var superFit   = fitToReference(spUp,       normalUp, statsStep, "sup_fit"+suffix);
 
-   // Buttons
-   this.okBtn = new PushButton(this); this.okBtn.text = "Run";
-   this.okBtn.onClick = function(){ this.dialog.ok(); };
-   this.cancelBtn = new PushButton(this); this.cancelBtn.text = "Cancel";
-   this.cancelBtn.onClick = function(){ this.dialog.cancel(); };
-   this.btnSizer = new HorizontalSizer; this.btnSizer.addStretch(); this.btnSizer.add(this.okBtn); this.btnSizer.add(this.cancelBtn);
+   var tiles = computeTilesSNR(normal1xMono, tile, stride, sigma_bg, "SNR tiles");
 
-   // Layout
-   this.sizer = new VerticalSizer;
-   this.sizer.margin = 10; this.sizer.spacing = 8;
+   var TS = percentile(tiles.snrList.slice(), lowP);
+   var TD = percentile(tiles.snrList.slice(), 100 - highP);
 
-   this.sizer.add(this.titleLabel);
-   this.sizer.add(this.authorLabel);
+   console.writeln("TS"+suffix+" = " + TS);
+   console.writeln("TD"+suffix+" = " + TD);
 
-   this.sizer.add(this.drizzleSizer);
-   this.sizer.add(this.normalSizer);
-   this.sizer.add(this.bgSizer);
+   var masks = buildMasks(finalW, finalH, scale, tile, tiles.coords, tiles.snrList, TS, TD, softness, suffix);
 
-   this.sizer.add(this.tileSizer);
-   this.sizer.add(this.lowSizer);
-   this.sizer.add(this.highSizer);
-   this.sizer.add(this.trSizer);
+   tryFeather(masks.vD, featherSigma);
+   tryFeather(masks.vN, featherSigma);
+   tryFeather(masks.vS, featherSigma);
 
-   this.sizer.add(this.btnSizer);
+   var outId = "adaptive_blend" + suffix;
+   blend3(drizzleFit, normalUp, superFit, masks, outId);
 
-   this.windowTitle = "Adaptive Drizzle Blend Beta 1";
+   var outW = ImageWindow.windowById(outId);
+   if (!outW || outW.isNull) throw new Error("Failed to create: " + outId);
+   return outW.mainView;
+}
+
+// ---------------- Cleanup ----------------
+function closeIntermediatesForSuffix(suffix)
+{
+   var ids = [
+      "nodrizzle_up"+suffix,
+      "super_small"+suffix,
+      "super_up"+suffix,
+      "drz_fit"+suffix,
+      "sup_fit"+suffix,
+      "maskD"+suffix,
+      "maskN"+suffix,
+      "maskS"+suffix
+   ];
+   for (var i=0; i<ids.length; i++) safeCloseById(ids[i]);
+}
+
+// ---------------- UI ----------------
+function hasUI()
+{
+   return (typeof Dialog !== "undefined") &&
+          (typeof ViewList !== "undefined") &&
+          (typeof HorizontalSizer !== "undefined") &&
+          (typeof VerticalSizer !== "undefined") &&
+          (typeof Label !== "undefined") &&
+          (typeof Edit !== "undefined") &&
+          (typeof PushButton !== "undefined");
+}
+
+function Params()
+{
+   this.tile = 256;
+   this.lowP = 10;
+   this.highP = 50;
+   this.featherSigma = 30.0;
+
+   this.drizzleView = new View;
+   this.normalView  = new View;
+   this.bgView      = new View;
+}
+
+function AppDialog(params)
+{
+   this.__base__ = Dialog;
+   this.__base__();
+
+   this.windowTitle = APP_TITLE;
+
+   var titleLabel = new Label(this);
+   titleLabel.text = APP_TITLE;
+   var f = titleLabel.font; f.bold = true; titleLabel.font = f;
+
+   var authorLabel = new Label(this);
+   authorLabel.text = APP_AUTHOR;
+
+   var drizzleLabel = new Label(this);
+   drizzleLabel.text = "Drizzle View:";
+
+   var drizzleList = new ViewList(this);
+   drizzleList.getAll();
+   drizzleList.onViewSelected = function(v){ params.drizzleView = v; };
+
+   var normalLabel = new Label(this);
+   normalLabel.text = "Normal View (1x):";
+
+   var normalList = new ViewList(this);
+   normalList.getAll();
+   normalList.onViewSelected = function(v){ params.normalView = v; };
+
+   var bgLabel = new Label(this);
+   bgLabel.text = "Background Preview:";
+
+   var bgList = new ViewList(this);
+   bgList.getAll();
+   bgList.onViewSelected = function(v){ params.bgView = v; };
+
+   var tileLabel = new Label(this);
+   tileLabel.text = "Analysis Area Size (px):";
+
+   var tileEdit = new Edit(this);
+   tileEdit.text = "" + params.tile;
+   tileEdit.onTextUpdated = function(s)
+   {
+      var n = parseInt(s,10);
+      if (!isNaN(n)) params.tile = Math.max(16, Math.min(4096, n));
+   };
+
+   var lowLabel = new Label(this);
+   lowLabel.text = "Low-SNR Areas to Smooth (%):";
+
+   var lowEdit = new Edit(this);
+   lowEdit.text = "" + params.lowP;
+   lowEdit.onTextUpdated = function(s)
+   {
+      var n = parseInt(s,10);
+      if (!isNaN(n)) params.lowP = Math.max(0, Math.min(100, n));
+   };
+
+   var highLabel = new Label(this);
+   highLabel.text = "High-SNR Areas for Drizzle (%):";
+
+   var highEdit = new Edit(this);
+   highEdit.text = "" + params.highP;
+   highEdit.onTextUpdated = function(s)
+   {
+      var n = parseInt(s,10);
+      if (!isNaN(n)) params.highP = Math.max(0, Math.min(100, n));
+   };
+
+   var featherLabel = new Label(this);
+   featherLabel.text = "Transition Smoothness:";
+
+   var featherEdit = new Edit(this);
+   featherEdit.text = "" + params.featherSigma;
+   featherEdit.onTextUpdated = function(s)
+   {
+      var n = parseFloat(s);
+      if (!isNaN(n)) params.featherSigma = Math.max(0, Math.min(200, n));
+   };
+
+   var okBtn = new PushButton(this);
+   okBtn.text = "Run";
+   okBtn.onClick = function(){ this.dialog.ok(); };
+
+   var cancelBtn = new PushButton(this);
+   cancelBtn.text = "Cancel";
+   cancelBtn.onClick = function(){ this.dialog.cancel(); };
+
+   function row(label, control)
+   {
+      var h = new HorizontalSizer;
+      h.spacing = 6;
+      h.add(label);
+      h.add(control, 100);
+      return h;
+   }
+
+   var top = new VerticalSizer;
+   top.margin = 10;
+   top.spacing = 8;
+
+   top.add(titleLabel);
+   top.add(authorLabel);
+
+   top.add(row(drizzleLabel, drizzleList));
+   top.add(row(normalLabel, normalList));
+   top.add(row(bgLabel, bgList));
+
+   top.add(row(tileLabel, tileEdit));
+   top.add(row(lowLabel, lowEdit));
+   top.add(row(highLabel, highEdit));
+   top.add(row(featherLabel, featherEdit));
+
+   var btnRow = new HorizontalSizer;
+   btnRow.addStretch();
+   btnRow.add(okBtn);
+   btnRow.add(cancelBtn);
+
+   top.add(btnRow);
+
+   this.sizer = top;
    this.adjustToContents();
 }
 AppDialog.prototype = new Dialog;
 
-// ---------------- main ----------------
+// ---------------- Main ----------------
 function main()
 {
    console.show();
-   if (ImageWindow.windows.length < 2){ console.writeln("Open at least 2 images."); return; }
+   console.writeln("=== " + APP_TITLE + " ===");
+   console.writeln(APP_AUTHOR);
 
-   var dlg = new AppDialog();
-   if (!dlg.execute()) return;
-
-   var drz = data.drizzleView;
-   var norOrig = data.normalView; // 1x original
-   var bg = data.bgPreview;
-
-   if (drz.isNull || norOrig.isNull){ console.writeln("Select Drizzle and Normal views."); return; }
-   if (drz.id == norOrig.id){ console.writeln("Select two different views."); return; }
-   if (bg.isNull){ console.writeln("Select a Background Preview."); return; }
-
-   if (drz.image.numberOfChannels != 1 || norOrig.image.numberOfChannels != 1)
+   if (!hasUI())
    {
-      console.writeln("ERROR: MONO only.");
+      console.writeln("*** Error: UI classes not available in this PixInsight environment.");
       return;
    }
 
+   var params = new Params();
+   var dlg = new AppDialog(params);
+   if (!dlg.execute()) return;
+
+   if (params.drizzleView.isNull || params.normalView.isNull)
+      throw new Error("Please select Drizzle and Normal views.");
+   if (params.bgView.isNull)
+      throw new Error("Please select a Background Preview.");
+   if (params.drizzleView.id === params.normalView.id)
+      throw new Error("Drizzle and Normal must be different views.");
+
+   var drzCh = params.drizzleView.image.numberOfChannels;
+   var norCh = params.normalView.image.numberOfChannels;
+   var bgCh  = params.bgView.image.numberOfChannels;
+
+   var isRGB  = (drzCh >= 3 && norCh >= 3);
+   var isMono = (drzCh === 1 && norCh === 1);
+
+   if (!isRGB && !isMono)
+      throw new Error("Unsupported channel configuration. Use either MONO (1 channel) or RGB (3 channels) images.");
+   if (drzCh !== norCh)
+      throw new Error("Drizzle and Normal must have the same number of channels.");
+
+   if (isMono && bgCh !== 1)
+      throw new Error("Mono mode: Background preview must be mono (create it on a mono image).");
+   if (isRGB && bgCh < 3)
+      throw new Error("RGB mode: Background preview must be RGB (create it on an RGB image).");
+
+   console.writeln("Auto mode: " + (isRGB ? "RGB (OSC)" : "Mono"));
+
+   safeCloseById("adaptive_blend");
+
    try
    {
-      console.writeln("=== Adaptive Drizzle Blend Beta 1 ===");
+      if (isMono)
+      {
+         var out = runMono(params.drizzleView, params.normalView, params.bgView, params, "");
+         console.writeln("Done: " + out.id);
+         closeIntermediatesForSuffix("");
+      }
+      else
+      {
+         console.writeln("Extract channels...");
+         var drzR = extractChannelToMono(params.drizzleView, 0, "drz_R", "Extract Drizzle R");
+         var drzG = extractChannelToMono(params.drizzleView, 1, "drz_G", "Extract Drizzle G");
+         var drzB = extractChannelToMono(params.drizzleView, 2, "drz_B", "Extract Drizzle B");
 
-      var finalW = drz.image.width, finalH = drz.image.height;
-      var origW = norOrig.image.width, origH = norOrig.image.height;
+         var norR = extractChannelToMono(params.normalView, 0, "nor_R", "Extract Normal R");
+         var norG = extractChannelToMono(params.normalView, 1, "nor_G", "Extract Normal G");
+         var norB = extractChannelToMono(params.normalView, 2, "nor_B", "Extract Normal B");
 
-      var scaleX = finalW / origW;
-      var scaleY = finalH / origH;
-      var scale = Math.round(scaleX);
+         var bgR  = extractChannelToMono(params.bgView, 0, "bg_R", "Extract BG R");
+         var bgG  = extractChannelToMono(params.bgView, 1, "bg_G", "Extract BG G");
+         var bgB  = extractChannelToMono(params.bgView, 2, "bg_B", "Extract BG B");
 
-      console.writeln("DRIZZLE: " + drz.id + "  " + finalW + "x" + finalH);
-      console.writeln("NORMAL(1x): " + norOrig.id + "  " + origW + "x" + origH);
+         console.writeln("Process R...");
+         var outR = runMono(drzR, norR, bgR, params, "_R");
+         closeIntermediatesForSuffix("_R");
 
-      if (Math.abs(scaleX - scale) > 1e-3 || Math.abs(scaleY - scale) > 1e-3 || scale < 1)
-         throw new Error("drizzle/normal scale must be integer (1x or 2x).");
+         console.writeln("Process G...");
+         var outG = runMono(drzG, norG, bgG, params, "_G");
+         closeIntermediatesForSuffix("_G");
 
-      // NORMAL_UP to final (generated only if needed)
-      var norUp = (origW == finalW && origH == finalH) ? norOrig
-                 : upsampleNearestMono(norOrig, finalW, finalH, "nodrizzle_up", "Upsampling normal:");
+         console.writeln("Process B...");
+         var outB = runMono(drzB, norB, bgB, params, "_B");
+         closeIntermediatesForSuffix("_B");
 
-      // SUPERPIXEL always ON: norOrig (1x) -> small (0.5x) -> up to final
-      console.writeln("Superpixel 2x2 from NORMAL(1x)...");
-      var spSmall = makeSuperpixel2x2Mono(norOrig, "superpixel_small");
+         console.writeln("Combine RGB -> adaptive_blend ...");
+         combineRGBManual(outR, outG, outB, "adaptive_blend");
+         console.writeln("Done: adaptive_blend");
+         // Close extracted channels and channel outputs (keep only inputs + adaptive_blend)
+         safeCloseById("drz_R"); safeCloseById("drz_G"); safeCloseById("drz_B");
+         safeCloseById("nor_R"); safeCloseById("nor_G"); safeCloseById("nor_B");
+         safeCloseById("bg_R");  safeCloseById("bg_G");  safeCloseById("bg_B");
 
-      console.writeln("Upscaling superpixel to final...");
-      var spUp = upsampleNearestMono(spSmall, finalW, finalH, "superpixel_up", "Upsampling super:");
+         safeCloseById("adaptive_blend_R");
+         safeCloseById("adaptive_blend_G");
+         safeCloseById("adaptive_blend_B");
 
-      // sigma_bg from preview
-      var sigma_bg = sigmaFromPreviewMAD(bg, data.statsStep);
-      console.writeln("sigma_bg (preview MAD) = " + sigma_bg);
-
-      // FIT always ON
-      console.writeln("Robust intensity matching (fit)...");
-      var drzFit = fitToReference(drz, norUp, data.statsStep, "drizzle_fit");
-      var spFit  = fitToReference(spUp, norUp, data.statsStep, "super_fit");
-
-      // Tile params
-      var tile = data.tile;
-      var stride = Math.max(1, Math.floor(tile/2)); // hidden: 50% overlap
-      var softness = data.softness;
-
-      var lowP = data.lowSmooth;
-      var highP = data.highDrizzle;
-      if (lowP + highP > 100)
-         throw new Error("Low-SNR% + High-SNR% cannot exceed 100.");
-
-      console.writeln("Tile=" + tile + "  stride=" + stride + "  low%=" + lowP + "  high%=" + highP);
-
-      // SNR tiles
-      var r = computeTileSNR(norOrig, origW, origH, tile, stride, sigma_bg);
-      if (r.snrList.length < 1)
-         throw new Error("No tiles. Reduce Analysis Area Size.");
-
-      var TD = percentile(r.snrList.slice(), 100 - highP);
-      var TS = percentile(r.snrList.slice(), lowP);
-      console.writeln("SNR thresholds: TS(low)=" + TS + "  TD(high)=" + TD);
-
-      // Masks
-      var m = buildMasks3Scaled(finalW, finalH, scale, tile, r.coords, r.snrList, TS, TD, softness);
-
-      // Feather
-      console.writeln("Feather masks (Transition Smoothness)...");
-      feather(m.vD, data.transition);
-      feather(m.vN, data.transition);
-      feather(m.vS, data.transition);
-
-      // Blend
-      console.writeln("Blending...");
-      blend3(drzFit, norUp, spFit, "adaptive_blend_3");
-      console.writeln("Done: adaptive_blend_3");
+         // NOTE: Keeping channel intermediates open for verification (requested).
+         // The following windows remain: drz_R/G/B, nor_R/G/B, bg_R/G/B, adaptive_blend_R/G/B.
+      }
    }
    catch (e)
    {
+      progressDone();
       console.writeln("\n*** Error: " + e);
-   }
-   finally
-   {
-      closeIntermediateWindows();
-      console.writeln("Intermediates closed.");
    }
 }
 
