@@ -1,25 +1,15 @@
 #feature-id    Utilities > Adaptive Drizzle Blend
 #feature-info  Adaptive Drizzle Blend 1.0<br/>by Daniel Espitia
 /*
-Adaptive Drizzle Blend Beta 1
+Adaptive Drizzle Blend 1.0
 by Daniel Espitia
 */
 /*
-Adaptive Drizzle Blend Beta 1
+Adaptive Drizzle Blend 1.0
 by Daniel Espitia
-
-- Select open views (Drizzle, Normal 1x, Background Preview)
-- Auto-detect MONO vs RGB (OSC) based on numberOfChannels (checkbox removed)
-- RGB mode: process R/G/B independently + recombine to a single RGB result
-- SNR per tile computed on Normal 1x using sigma from Background Preview (MAD)
-- 3-way blend: Superpixel (low SNR) + Normal (mid) + Drizzle (high)
-- Robust global intensity matching enabled by default
-- Superpixel enabled by default (2x2 computed from Normal 1x BEFORE upsampling)
-- Output image id: adaptive_blend (only)
-- Closes intermediate images at end (keeps inputs + adaptive_blend)
 */
 
-var APP_TITLE  = "Adaptive Drizzle Blend Beta 1";
+var APP_TITLE  = "Adaptive Drizzle Blend 1.0";
 var APP_AUTHOR = "by Daniel Espitia";
 
 // ---------------- Console progress (single-line) ----------------
