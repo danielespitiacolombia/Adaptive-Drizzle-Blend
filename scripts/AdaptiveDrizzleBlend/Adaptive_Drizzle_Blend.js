@@ -343,43 +343,83 @@ function fitToReference(inView, refView, step, outId)
 }
 
 // ---------------- SNR per tile (mono) ----------------
-function computeTilesSNR(normal1xView, tile, stride, sigma_bg, label)
+function computeTilesSNR(imgView, tile, stride, sigma_bg, label)
 {
-   var img = normal1xView.image;
+   var img = imgView.image;
    var W = img.width, H = img.height;
 
-   var snrList = [];
-   var coords = [];
+   // Generate tile origins ensuring full coverage, including the last partial tile at right/bottom.
+   function axisPositions(L, tile, stride)
+   {
+      var a = [];
+      if (L <= 0) return a;
+      if (tile <= 1) tile = 1;
+      if (stride < 1) stride = 1;
 
-   var count = 0;
-   for (var y0=0; y0<=H-tile; y0+=stride)
-      for (var x0=0; x0<=W-tile; x0+=stride)
-         count++;
+      var last = Math.max(0, L - tile);
 
-   var idx = 0;
-   for (var y0=0; y0<=H-tile; y0+=stride)
-      for (var x0=0; x0<=W-tile; x0+=stride)
+      for (var p = 0; p < L; p += stride)
       {
-         idx++;
-         if ((idx & 31) === 0 || idx === count)
-            progressLine(100*idx/count, label);
-
-         var a = new Array(tile*tile);
-         var k = 0;
-         for (var y=0; y<tile; y++)
-            for (var x=0; x<tile; x++)
-               a[k++] = img.sample(x0+x, y0+y);
-
-         var med = percentile(a.slice(), 50);
-         var p95 = percentile(a.slice(), 95);
-         var snr = (p95 - med) / sigma_bg;
-
-         snrList.push(snr);
-         coords.push({x0:x0, y0:y0});
+         if (p > last) break;
+         a.push(p);
       }
 
+      // Ensure last position is included
+      if (a.length === 0 || a[a.length-1] !== last)
+         a.push(last);
+
+      return a;
+   }
+
+   var xs = axisPositions(W, tile, stride);
+   var ys = axisPositions(H, tile, stride);
+
+   var coords = [];
+   var snrList = [];
+
+   var total = xs.length * ys.length;
+   var t = 0;
+
+   // Work on channel 0 for mono / extracted mono views
+   try { img.selectedChannel = 0; } catch(e) {}
+
+   for (var iy = 0; iy < ys.length; iy++)
+   {
+      var y0 = ys[iy];
+      var th = Math.min(tile, H - y0);
+
+      for (var ix = 0; ix < xs.length; ix++)
+      {
+         var x0 = xs[ix];
+         var tw = Math.min(tile, W - x0);
+
+         var samples = new Array(tw * th);
+         var k = 0;
+
+         for (var y = 0; y < th; y++)
+            for (var x = 0; x < tw; x++)
+               samples[k++] = img.sample(x0 + x, y0 + y);
+
+         var med = percentile(samples.slice(), 50);
+         var p95 = percentile(samples.slice(), 95);
+
+         var snr = 0;
+         if (sigma_bg > 1e-12)
+            snr = (p95 - med) / sigma_bg;
+         else
+            snr = 0;
+
+         coords.push({ x0:x0, y0:y0, w:tw, h:th });
+         snrList.push(snr);
+
+         t++;
+         if ((t & 31) === 0 || t === total)
+            progressLine(100 * t / total, label);
+      }
+   }
    progressDone();
-   return { snrList: snrList, coords: coords, W: W, H: H };
+
+   return { coords:coords, snrList:snrList };
 }
 
 function logistic01(snr, T, softness)
@@ -451,8 +491,11 @@ function buildMasks(finalW, finalH, scale, tile1x, coords, snrList, TS, TD, soft
 
          var X0 = coords[t].x0 * scale;
          var Y0 = coords[t].y0 * scale;
-         var maxX = Math.min(finalW, X0 + tileF);
-         var maxY = Math.min(finalH, Y0 + tileF);
+         var tw = (coords[t].w ? coords[t].w*scale : tileF);
+         var th = (coords[t].h ? coords[t].h*scale : tileF);
+
+         var maxX = Math.min(finalW, X0 + tw);
+         var maxY = Math.min(finalH, Y0 + th);
 
          for (var yy=Y0; yy<maxY; yy++)
             for (var xx=X0; xx<maxX; xx++)
@@ -513,8 +556,11 @@ function buildMasksDN(finalW, finalH, scale, tile1x, coords, snrList, TD, softne
 
          var X0 = coords[t].x0 * scale;
          var Y0 = coords[t].y0 * scale;
-         var maxX = Math.min(finalW, X0 + tileF);
-         var maxY = Math.min(finalH, Y0 + tileF);
+         var tw = (coords[t].w ? coords[t].w*scale : tileF);
+         var th = (coords[t].h ? coords[t].h*scale : tileF);
+
+         var maxX = Math.min(finalW, X0 + tw);
+         var maxY = Math.min(finalH, Y0 + th);
 
          for (var yy=Y0; yy<maxY; yy++)
             for (var xx=X0; xx<maxX; xx++)
